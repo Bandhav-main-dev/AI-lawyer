@@ -1,59 +1,74 @@
 import os
-import whisper
+import uuid
+import json
 import pytesseract
+import whisper
+import moviepy.editor as mp
 from PIL import Image
-import cv2
-import torch
-import torchvision.transforms as T
-from transformers import pipeline
 
-# OCR & vision tools
-ocr = pytesseract.pytesseract
-summarizer = pipeline("summarization", model="sshleifer/distilbart-cnn-12-6")
+# Load Whisper model once
+_whisper_model = None
+def get_whisper_model():
+    global _whisper_model
+    if _whisper_model is None:
+        _whisper_model = whisper.load_model("base")
+    return _whisper_model
 
-# Whisper for audio
-whisper_model = whisper.load_model("base")
 
-def analyze_text_file(file_path):
-    with open(file_path, 'r') as f:
-        text = f.read()
-    return summarizer(text, max_length=100, min_length=30, do_sample=False)[0]['summary_text']
+def extract_text_from_image(image_path):
+    image = Image.open(image_path)
+    return pytesseract.image_to_string(image)
 
-def analyze_image(file_path):
-    image = Image.open(file_path)
-    text = ocr.image_to_string(image)
-    return f"🖼️ Image Analysis:\nText Detected: {text.strip()[:300]}..."
 
-def analyze_audio(file_path):
-    result = whisper_model.transcribe(file_path)
-    return f"🔊 Audio Transcript:\n{result['text']}"
+def extract_text_from_audio(audio_path):
+    model = get_whisper_model()
+    result = model.transcribe(audio_path)
+    return result["text"]
 
-def analyze_video(file_path, frame_interval=30):
-    cap = cv2.VideoCapture(file_path)
-    frame_texts = []
-    frame_count = 0
 
-    while True:
-        ret, frame = cap.read()
-        if not ret: break
-        if frame_count % frame_interval == 0:
-            img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-            text = ocr.image_to_string(img)
-            if text.strip(): frame_texts.append(text.strip())
-        frame_count += 1
+def extract_text_from_video(video_path):
+    clip = mp.VideoFileClip(video_path)
+    audio_temp = f"/tmp/audio_{uuid.uuid4()}.wav"
+    clip.audio.write_audiofile(audio_temp)
+    return extract_text_from_audio(audio_temp)
 
-    cap.release()
-    return f"🎥 Video OCR Summary:\n{''.join(frame_texts[:5])}..."
 
-def auto_analyze(file_path):
-    ext = os.path.splitext(file_path)[-1].lower()
-    if ext in ['.txt']:
-        return analyze_text_file(file_path)
-    elif ext in ['.jpg', '.png', '.jpeg']:
-        return analyze_image(file_path)
-    elif ext in ['.mp4', '.avi', '.mov']:
-        return analyze_video(file_path)
-    elif ext in ['.mp3', '.wav', '.aac']:
-        return analyze_audio(file_path)
+def extract_text_from_txt(txt_path):
+    with open(txt_path, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+def process_uploaded_evidence(case_id, file_bytes, file_name, evidence_dir, generate_defense_questions_func):
+    file_ext = file_name.split(".")[-1].lower()
+    filename_base = f"{case_id}_{file_name}"
+    saved_path = os.path.join(evidence_dir, filename_base)
+
+    # Save the uploaded file
+    with open(saved_path, "wb") as f:
+        f.write(file_bytes)
+
+    # Extract text from file based on type
+    if file_ext in ["png", "jpg", "jpeg"]:
+        evidence_text = extract_text_from_image(saved_path)
+    elif file_ext in ["wav", "mp3", "m4a"]:
+        evidence_text = extract_text_from_audio(saved_path)
+    elif file_ext in ["mp4", "avi", "mkv"]:
+        evidence_text = extract_text_from_video(saved_path)
+    elif file_ext == "txt":
+        evidence_text = extract_text_from_txt(saved_path)
     else:
-        return "❌ Unsupported evidence format."
+        raise ValueError("Unsupported file type for evidence processing")
+
+    # Generate questions
+    questions = generate_defense_questions_func("", evidence_text)
+    question_path = os.path.join(evidence_dir, f"{filename_base}_pending_questions.json")
+    with open(question_path, "w") as f:
+        json.dump(questions, f, indent=2)
+
+    return {
+        "filename": filename_base,
+        "saved_path": saved_path,
+        "extracted_text": evidence_text,
+        "questions": questions,
+        "questions_path": question_path
+    }
