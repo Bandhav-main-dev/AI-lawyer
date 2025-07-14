@@ -12,6 +12,7 @@ from utils import load_all_chat_for_case, load_defense_notes
 from evidence_analyzer import process_uploaded_evidence
 load_dotenv()
 
+
 env = Environment(loader=FileSystemLoader("/workspaces/AI-lawyer/templetes"))
 
 
